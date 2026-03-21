@@ -1,7 +1,7 @@
 import { CONFIG } from "./config";
 import { readInputLinks } from "./io/reader";
 import { writeArticlesAsMarkdown, slugFromUrl, articleToMarkdownFile } from "./io/writer";
-import { updateMdStatus, updateUploadStatus, updateErrorMessage } from "./io/sheets";
+import { updateLinkStatus, disconnectDb } from "./io/db";
 import { uploadMarkdownToS3 } from "./io/s3";
 import { launchBrowser, closeBrowser } from "./scraper/browser";
 import { scrapeAll } from "./scraper/scraper";
@@ -18,6 +18,7 @@ async function main(): Promise<void> {
 
   if (links.length === 0) {
     logger.warn("No pending links to scrape. Exiting.");
+    await disconnectDb();
     return;
   }
 
@@ -27,17 +28,16 @@ async function main(): Promise<void> {
     const articles = await scrapeAll(links, context);
     writeArticlesAsMarkdown(outputDir, articles);
 
-    // Update Google Sheet + upload to S3 for each article
+    // Update database + upload to S3 for each article
     for (let i = 0; i < articles.length; i++) {
       const article = articles[i];
-      const rowNumber = links[i].rowNumber;
-      if (!rowNumber) continue;
+      const linkId = links[i].id;
+      if (!linkId) continue;
 
       try {
         if (article.status === "success") {
-          // Update md status
-          await updateMdStatus(rowNumber, "done");
-          logger.info(`Sheet updated: row ${rowNumber} → md status: done`);
+          await updateLinkStatus(linkId, { mdStatus: "done" });
+          logger.info(`DB updated: link ${linkId} → md status: done`);
 
           // Upload to S3
           if (CONFIG.AWS_S3_BUCKET) {
@@ -45,23 +45,27 @@ async function main(): Promise<void> {
               const slug = slugFromUrl(article.sourceUrl);
               const mdContent = articleToMarkdownFile(article);
               await uploadMarkdownToS3(slug, mdContent);
-              await updateUploadStatus(rowNumber, "done");
-              logger.info(`Sheet updated: row ${rowNumber} → upload status: done`);
+              await updateLinkStatus(linkId, { uploadStatus: "done" });
+              logger.info(`DB updated: link ${linkId} → upload status: done`);
             } catch (s3Err) {
               const s3Msg = s3Err instanceof Error ? s3Err.message : String(s3Err);
-              logger.error(`S3 upload failed for row ${rowNumber}: ${s3Msg}`);
-              await updateUploadStatus(rowNumber, "error");
-              await updateErrorMessage(rowNumber, `S3 upload failed: ${s3Msg}`);
+              logger.error(`S3 upload failed for link ${linkId}: ${s3Msg}`);
+              await updateLinkStatus(linkId, {
+                uploadStatus: "error",
+                error: `S3 upload failed: ${s3Msg}`,
+              });
             }
           }
         } else {
-          await updateMdStatus(rowNumber, "error");
-          await updateErrorMessage(rowNumber, article.error || "Unknown error");
-          logger.info(`Sheet updated: row ${rowNumber} → error`);
+          await updateLinkStatus(linkId, {
+            mdStatus: "error",
+            error: article.error || "Unknown error",
+          });
+          logger.info(`DB updated: link ${linkId} → error`);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`Failed to update sheet row ${rowNumber}: ${msg}`);
+        logger.error(`Failed to update DB for link ${linkId}: ${msg}`);
       }
     }
 
@@ -72,6 +76,7 @@ async function main(): Promise<void> {
     );
   } finally {
     await closeBrowser();
+    await disconnectDb();
   }
 }
 

@@ -3,5 +3,4 @@ services:
     build: .
     env_file: .env
     volumes:
-      - ./credentials.json:/app/credentials.json:ro
-      - ./data/output:/app/data/output
+      - ./data:/app/data

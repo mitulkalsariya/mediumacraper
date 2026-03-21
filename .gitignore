@@ -1,5 +1,6 @@
 node_modules/
-credentials.json
 .env
 dist/
 data/output/
+*.db
+*.db-journal

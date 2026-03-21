@@ -1,7 +1,7 @@
 export interface InputLink {
   url: string;
   label?: string;
-  rowNumber?: number;
+  id?: number;
 }
 
 export interface ScrapedArticle {

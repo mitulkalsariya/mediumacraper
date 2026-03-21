@@ -1,29 +1,29 @@
 # Link Scrapper
 
-Automated Medium article scraper that extracts content via Freedium, converts to clean Markdown (optimized for LLM training), uploads to AWS S3, and tracks progress in Google Sheets.
+Automated Medium article scraper that extracts content via Freedium, converts to clean Markdown (optimized for LLM training), and uploads to AWS S3. Uses SQLite (via Prisma) for tracking progress.
 
 ## Architecture
 
 ```
 +------------------+        +---------------------+        +------------------+
-|  Google Sheet    |        |   Link Scrapper     |        |    AWS S3        |
-|                  |  read  |                     | upload |                  |
-|  z href 2 (URL) +------->+  1. Read pending    +------->+  articles/       |
-|  md status       |<------+  2. Launch Chromium  |        |  {slug}.md       |
-|  upload status   | update |  3. Scrape via      |        +------------------+
-|  error massage   |        |     Freedium        |
-+------------------+        |  4. HTML -> Markdown |        +------------------+
-                            |  5. Write .md local  +------->+  data/output/    |
+|  SQLite DB       |        |   Link Scrapper     |        |    AWS S3        |
+|  (links.db)      |        |                     |        |                  |
+|                  |  query |  1. Read pending    | upload |  articles/       |
+|  url             +------->+  2. Launch Chromium  +------->+  {slug}.md       |
+|  md_status       |<------+  3. Scrape via       |        +------------------+
+|  upload_status   | update |     Freedium         |
+|  error           |        |  4. HTML -> Markdown |        +------------------+
++------------------+        |  5. Write .md local  +------->+  data/output/    |
                             |  6. Upload to S3     |  write |  {slug}.md       |
-                            |  7. Update sheet     |        +------------------+
-                            +---------------------+
-                                     |
-                            +--------+--------+
-                            |                 |
-                    +-------v------+  +-------v--------+
-                    |  Playwright  |  |  Freedium      |
-                    |  (Chromium)  |  |  Mirror        |
-                    +--------------+  +----------------+
+       +--------+           |  7. Update DB        |        +------------------+
+       |  CSV   | import    +---------------------+
+       |  file  +------->          |
+       +--------+         +--------+--------+
+                          |                 |
+                  +-------v------+  +-------v--------+
+                  |  Playwright  |  |  Freedium      |
+                  |  (Chromium)  |  |  Mirror        |
+                  +--------------+  +----------------+
 ```
 
 ### Component Diagram
@@ -32,14 +32,14 @@ Automated Medium article scraper that extracts content via Freedium, converts to
 src/
  |
  +-- index.ts                    Entry point & orchestrator
- |
+ +-- import.ts                   CSV import CLI
  +-- config.ts                   Env vars + constants
  |
  +-- models/
  |    +-- types.ts               InputLink, ScrapedArticle
  |
  +-- io/
- |    +-- sheets.ts              Google Sheets read/write
+ |    +-- db.ts                  Prisma/SQLite queries
  |    +-- s3.ts                  AWS S3 upload
  |    +-- writer.ts              Local .md file output
  |    +-- reader.ts              Input orchestration
@@ -53,12 +53,23 @@ src/
       +-- html-to-markdown.ts    HTML -> clean Markdown (runs in browser)
       +-- retry.ts               Exponential backoff
       +-- logger.ts              Timestamped logging
+
+prisma/
+ +-- schema.prisma               Database schema (Link model)
+ +-- migrations/                 Auto-generated migrations
+
+data/
+ +-- links.db                    SQLite database
+ +-- output/                     Generated .md files
 ```
 
 ### Data Flow
 
 ```
-Google Sheet (pending URLs)
+CSV file (bulk import)
+        |
+        v
+  SQLite DB (pending URLs)
         |
         v
   Freedium Mirror URL
@@ -74,7 +85,7 @@ Google Sheet (pending URLs)
         |
         +---> Write data/output/{slug}.md
         +---> Upload to S3: articles/{slug}.md
-        +---> Update Sheet: md status = "done", upload status = "done"
+        +---> Update DB: md_status = "done", upload_status = "done"
 ```
 
 ---
@@ -83,8 +94,7 @@ Google Sheet (pending URLs)
 
 - **Node.js** >= 18
 - **Docker** (for production)
-- **Google Cloud** service account with Sheets API
-- **AWS** account with S3 access
+- **AWS** account with S3 access (optional)
 
 ---
 
@@ -99,24 +109,7 @@ npm install
 npx playwright install chromium
 ```
 
-### 2. Google Cloud Setup
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project (e.g., `link-scrapper`)
-3. Enable **Google Sheets API**: APIs & Services -> Library -> search "Google Sheets API" -> Enable
-4. Create **Service Account**: APIs & Services -> Credentials -> Create Credentials -> Service Account
-   - Name: `link-scrapper`, click Done
-5. Download key: click service account -> Keys -> Add Key -> JSON -> Download
-6. Save as `credentials.json` in the project root
-7. **Share your Google Sheet** with the service account email (from `client_email` in the JSON) as **Editor**
-
-### 3. AWS Setup
-
-1. IAM -> Create User (`link-scrapper`) -> Attach `AmazonS3FullAccess`
-2. Security credentials -> Create access key -> save Key ID + Secret
-3. Create an S3 bucket (or use existing)
-
-### 4. Configure environment
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
@@ -125,12 +118,13 @@ cp .env.example .env
 Edit `.env`:
 
 ```
-# Google Sheets
-GOOGLE_SHEET_ID=<sheet-id-from-url>
-GOOGLE_CREDENTIALS_PATH=./credentials.json
+# Database
+DATABASE_URL=file:./data/links.db
+
+# Batch size (articles per run)
 BATCH_SIZE=3
 
-# AWS S3
+# AWS S3 (optional — skip if not uploading)
 AWS_S3_BUCKET=your-bucket
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=AKIA...
@@ -138,29 +132,36 @@ AWS_SECRET_ACCESS_KEY=...
 S3_PREFIX=articles/
 ```
 
-The Sheet ID is from the URL: `https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit`
+### 3. Initialize database
 
-### 5. Google Sheet format
+```bash
+npx prisma migrate dev --name init
+```
 
-The sheet must have these columns (in order):
+### 4. Import links
 
-| Col | Header | Purpose |
-|-----|--------|---------|
-| A | ba href | - |
-| B | e src | - |
-| C | z href | - |
-| D | bb | - |
-| **E** | **z href 2** | **Article URL to scrape** |
-| F | bb 2 | - |
-| G | bb 3 | - |
-| H | e | - |
-| I | bs src | - |
-| J | bs src 2 | - |
-| K | v | - |
-| L | v 2 | - |
-| **M** | **md status** | **Updated to "done" or "error"** |
-| **N** | **upload status** | **Updated to "done" or "error"** |
-| **O** | **error massage** | **Error details if failed** |
+Export your Google Sheet as CSV (File -> Download -> CSV), then:
+
+```bash
+npm run import -- links.csv
+```
+
+The CSV just needs URLs — one per line or in any column. The importer auto-detects URLs:
+
+```csv
+url
+https://medium.com/@author/article-1
+https://medium.com/@author/article-2
+```
+
+### 5. AWS Setup (optional)
+
+Only needed if uploading to S3:
+
+1. IAM -> Create User (`link-scrapper`) -> Attach `AmazonS3FullAccess`
+2. Security credentials -> Create access key -> save Key ID + Secret
+3. Create an S3 bucket (or use existing)
+4. Add credentials to `.env`
 
 ---
 
@@ -169,8 +170,20 @@ The sheet must have these columns (in order):
 ### Local development
 
 ```bash
+# Scrape one batch
+npm start
+
+# Run again to process next batch
 npm start
 ```
+
+### View database (GUI)
+
+```bash
+npm run db:studio
+```
+
+Opens Prisma Studio in browser — view/edit all links and their status.
 
 ### Local production (compiled)
 
@@ -183,44 +196,56 @@ npm run start:prod
 
 ## Production Deployment
 
-### Option A: Docker Compose (recommended for single server)
+### Option A: Docker (single container, recommended)
 
 ```bash
-# Build the image
-docker compose build
+# Build
+docker build -t link-scrapper .
 
-# Run once (scrapes one batch, exits)
-docker compose run --rm scraper
+# Import links (one-time)
+docker run --rm \
+  -v ./data:/app/data \
+  -v ./links.csv:/app/links.csv \
+  link-scrapper node dist/import.js links.csv
 
-# Check output
-ls data/output/
+# Run scraper
+docker run --rm \
+  --env-file .env \
+  -v ./data:/app/data \
+  link-scrapper
 ```
+
+The `data/` volume persists the SQLite database and output `.md` files between runs.
 
 **Schedule with cron** (e.g., every 30 minutes):
 
+```
+*/30 * * * * docker run --rm --env-file /path/to/.env -v /path/to/data:/app/data link-scrapper >> /var/log/scraper.log 2>&1
+```
+
+### Option B: Docker Compose
+
 ```bash
-crontab -e
-```
+# Build
+docker compose build
 
-Add:
+# Run once
+docker compose run --rm scraper
 
-```
+# Schedule with cron
 */30 * * * * cd /path/to/link-scrapper && docker compose run --rm scraper >> /var/log/scraper.log 2>&1
 ```
 
-### Option B: AWS ECS / Fargate (serverless scheduled task)
+### Option C: AWS ECS / Fargate
 
 1. **Push image to ECR:**
 
 ```bash
-# Authenticate
 aws ecr get-login-password --region us-east-1 | \
   docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
 
-# Create repository (one-time)
 aws ecr create-repository --repository-name link-scrapper
 
-# Build, tag, push
 docker build -t link-scrapper .
 docker tag link-scrapper:latest <account-id>.dkr.ecr.us-east-1.amazonaws.com/link-scrapper:latest
 docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/link-scrapper:latest
@@ -231,16 +256,43 @@ docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/link-scrapper:latest
    - Image: `<account-id>.dkr.ecr.us-east-1.amazonaws.com/link-scrapper:latest`
    - CPU: 1 vCPU, Memory: 2 GB (Chromium needs this)
    - Environment variables: add all from `.env`
-   - For `GOOGLE_CREDENTIALS_PATH`: store credentials JSON in AWS Secrets Manager and mount as a file
+   - Mount EFS volume for `data/` to persist SQLite DB
 
 3. **Schedule with EventBridge:**
-   - Create rule: Schedule -> Rate(30 minutes) or Cron
-   - Target: ECS task (the task definition above)
-   - This runs the scraper automatically on schedule
+   - Create rule: Rate(30 minutes) or Cron expression
+   - Target: ECS task
 
-### Option C: AWS Lambda (not recommended)
+---
 
-Lambda has a 15-min timeout and limited tmp storage. Chromium in Lambda requires special layers. Use ECS/Fargate instead.
+## Managing Links
+
+### Import from CSV
+
+```bash
+npm run import -- links.csv
+```
+
+Duplicates are automatically skipped (upsert on URL).
+
+### View status
+
+```bash
+npm run db:studio
+```
+
+### Remove processed links
+
+After scraping and uploading, you can delete completed entries:
+
+```bash
+npx prisma db execute --file - <<< "DELETE FROM Link WHERE mdStatus = 'done' AND uploadStatus = 'done';"
+```
+
+### Reset failed links for retry
+
+```bash
+npx prisma db execute --file - <<< "UPDATE Link SET mdStatus = 'pending', uploadStatus = 'pending', error = NULL WHERE mdStatus = 'error';"
+```
 
 ---
 
@@ -248,10 +300,9 @@ Lambda has a 15-min timeout and limited tmp storage. Chromium in Lambda requires
 
 | Env Variable | Default | Description |
 |---|---|---|
-| `GOOGLE_SHEET_ID` | (required) | Google Sheet ID |
-| `GOOGLE_CREDENTIALS_PATH` | `./credentials.json` | Path to service account JSON |
+| `DATABASE_URL` | `file:./data/links.db` | SQLite database path |
 | `BATCH_SIZE` | `3` | Articles to process per run |
-| `AWS_S3_BUCKET` | (optional) | S3 bucket name. If empty, S3 upload is skipped |
+| `AWS_S3_BUCKET` | (optional) | S3 bucket. If empty, S3 upload is skipped |
 | `AWS_REGION` | `us-east-1` | AWS region |
 | `AWS_ACCESS_KEY_ID` | (required if S3) | AWS access key |
 | `AWS_SECRET_ACCESS_KEY` | (required if S3) | AWS secret key |
@@ -289,16 +340,7 @@ Clean article content in Markdown...
 
 ### Heading
 
-Text with [links](url), `inline code`, and:
-
-- bullet
-- lists
-
-Code blocks with language detection:
-
-```javascript
-const x = 1;
-```​
+Text with [links](url), `inline code`, and fenced code blocks with language detection.
 ```
 
 ---
@@ -309,10 +351,10 @@ const x = 1;
 |---|---|
 | Scrape fails | Retries 3x with exponential backoff (1s, 2s, 4s) |
 | Article extraction partial | Continues if title or content extracted |
-| Title + content both missing | Marked as error |
-| S3 upload fails | md status = "done", upload status = "error", error logged |
-| Sheet update fails | Logged, continues to next article |
-| All retries exhausted | Article marked as error in sheet with message |
+| Title + content both missing | Marked as error in DB |
+| S3 upload fails | md_status = "done", upload_status = "error", error logged |
+| DB update fails | Logged, continues to next article |
+| All retries exhausted | Link marked as error with message |
 
 ---
 

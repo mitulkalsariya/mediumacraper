@@ -7,8 +7,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY tsconfig.json ./
-COPY src/ ./src/
+COPY prisma/ ./prisma/
+RUN npx prisma generate
 
+COPY src/ ./src/
 RUN npx tsc
 
 # Stage 2: Production
@@ -32,12 +34,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxshmfence1 \
     fonts-noto-color-emoji \
     fonts-liberation \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=build /app/package.json /app/package-lock.json ./
 RUN npm ci --omit=dev
+
+# Generate Prisma client for production
+COPY --from=build /app/prisma ./prisma
+RUN npx prisma generate
 
 # Install Playwright Chromium browser
 RUN npx playwright install chromium
@@ -48,4 +55,5 @@ RUN mkdir -p data/output
 
 ENV NODE_ENV=production
 
-CMD ["node", "dist/index.js"]
+# Run migrations then start scraper
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
