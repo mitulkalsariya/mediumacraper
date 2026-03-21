@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/output/
+.env
+credentials.json
+.git/
+.gitignore
+*.md
