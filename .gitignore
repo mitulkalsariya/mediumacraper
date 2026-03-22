@@ -4,6 +4,3 @@ dist/
 data/output/
 *.db
 *.db-journal
-.env.example
-.env
-.env
