@@ -368,8 +368,10 @@ docker run --rm --env-file .env -v ./data:/app/data mediumscraper node dist/sync
 # Then run scraper
 docker run --rm --env-file .env -v ./data:/app/data mediumscraper
 
-Import runs on the host (not Docker), so with the .env fix it should work directly:
+To upload csv to server
+scp -i medium-scrape.pem medium-link-data.csv ubuntu@13.201.187.27:/home/ubuntu/
 
+Import runs on the host (not Docker), so with the .env fix it should work directly:
 
 cd /home/ubuntu/mediumacraper
 npx ts-node src/import.ts links.csv
