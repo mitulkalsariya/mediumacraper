@@ -32,6 +32,22 @@ export function articleToMarkdownFile(article: ScrapedArticle): string {
   return lines.join("\n");
 }
 
+export function writeArticleAsMarkdown(
+  outputDir: string,
+  article: ScrapedArticle
+): string {
+  const dir = path.resolve(outputDir);
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const slug = slugFromUrl(article.sourceUrl);
+  const mdPath = path.join(dir, `${slug}.md`);
+  fs.writeFileSync(mdPath, articleToMarkdownFile(article), "utf-8");
+  return mdPath;
+}
+
 export function writeArticlesAsMarkdown(
   outputDir: string,
   articles: ScrapedArticle[]

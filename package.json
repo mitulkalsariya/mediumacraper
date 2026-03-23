@@ -9,7 +9,8 @@
     "build": "tsc",
     "import": "ts-node src/import.ts",
     "db:migrate": "prisma migrate deploy",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "sync": "ts-node src/sync.ts"
   },
   "keywords": [],
   "author": "",
