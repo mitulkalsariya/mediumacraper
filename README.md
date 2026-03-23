@@ -361,3 +361,21 @@ Text with [links](url), `inline code`, and fenced code blocks with language dete
 ## License
 
 ISC
+
+# Sync existing S3 files with DB
+docker run --rm --env-file .env -v ./data:/app/data mediumscraper node dist/sync.js
+
+# Then run scraper
+docker run --rm --env-file .env -v ./data:/app/data mediumscraper
+
+Import runs on the host (not Docker), so with the .env fix it should work directly:
+
+
+cd /home/ubuntu/mediumacraper
+npx ts-node src/import.ts links.csv
+or
+cd /home/ubuntu/mediumacraper
+npm run import -- links.csv
+
+# 5. Check results
+sqlite3 data/links.db "SELECT mdStatus, uploadStatus, COUNT(*) FROM Link GROUP BY mdStatus, uploadStatus;"
